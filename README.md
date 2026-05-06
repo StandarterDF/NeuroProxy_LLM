@@ -14,8 +14,8 @@
 
 ```bash
 # Клонируйте репозиторий (если еще не сделали этого)
-git clone https://github.com/ваш-репозиторий/llmproxyfier.git
-cd llmproxyfier
+git clone https://github.com/StandarterDF/NeuroProxy_LLM
+cd NeuroProxy_LLM
 
 # Установите зависимости
 pip install -r requirements.txt
