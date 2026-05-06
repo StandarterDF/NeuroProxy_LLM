@@ -83,8 +83,8 @@ log = logging.getLogger("llmproxyfier")
 DEFAULT_PORT = 8080
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_AUTH_HEADER = "X-Forwarded-Token"
-DEFAULT_TIMEOUT_TOTAL = 600
-DEFAULT_TIMEOUT_CONNECT = 60
+DEFAULT_TIMEOUT_TOTAL = 1200
+DEFAULT_TIMEOUT_CONNECT = 300
 
 
 # ---------------------------------------------------------------------------
