@@ -383,7 +383,7 @@ class ProxyRouter:
                                         try:
                                             data = json.loads(data_str)
                                             usage = data.get('usage', {})
-                                            if 'completion_tokens' in usage:
+                                            if isinstance(usage, dict) and 'completion_tokens' in usage:
                                                 completion_tokens = usage['completion_tokens']
                                         except json.JSONDecodeError:
                                             pass
@@ -411,7 +411,7 @@ class ProxyRouter:
                                     try:
                                         data = json.loads(data_str)
                                         usage = data.get('usage', {})
-                                        if 'completion_tokens' in usage:
+                                        if isinstance(usage, dict) and 'completion_tokens' in usage:
                                             completion_tokens = usage['completion_tokens']
                                     except json.JSONDecodeError:
                                         pass
