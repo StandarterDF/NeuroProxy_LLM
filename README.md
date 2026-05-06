@@ -5,26 +5,75 @@
 ## Установка
 
 ### Требования
-- Python 3.7+
-- Установленные зависимости: `aiohttp`
+- Python 3.7 или выше
+- pip (менеджер пакетов Python)
 
 ### Установка зависимостей
+
+#### Вариант 1: Установка через requirements.txt (рекомендуется)
+
 ```bash
-pip install aiohttp
+# Клонируйте репозиторий (если еще не сделали этого)
+git clone https://github.com/ваш-репозиторий/llmproxyfier.git
+cd llmproxyfier
+
+# Установите зависимости
+pip install -r requirements.txt
 ```
+
+#### Вариант 2: Ручная установка
+
+```bash
+pip install aiohttp==3.9.3
+```
+
+#### Для Windows (если возникают проблемы с установкой)
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install aiohttp==3.9.3
+```
+
+### Проверка установки
+
+После установки вы можете проверить, что все работает:
+
+```bash
+python -c "import aiohttp; print('aiohttp version:', aiohttp.__version__)"
+```
+
+Должна вывестись версия aiohttp (3.9.3 или выше).
 
 ## Использование
 
 ### Запуск сервера
 ```bash
-python main.py [PORT]
+python main.py [--port PORT] [--host HOST] [--proxy PROXY]
 ```
 
-Где `[PORT]` - опциональный параметр порта (по умолчанию: 8080).
+Параметры:
+- `--port`, `-p`: Порт для запуска сервера (по умолчанию: 8080)
+- `--host`: Интерфейс для привязки сервера (по умолчанию: 0.0.0.0)
+- `--proxy`: HTTP прокси для подключения к API (например, http://proxy.example.com:8080)
 
-Пример:
+**Проверка прокси:** При запуске сервер автоматически проверяет работоспособность указанного прокси. Если прокси недоступен, сервер не запустится и вернет код ошибки 1.
+
+Примеры:
 ```bash
-python main.py 8081
+# Запуск на порту 8081
+python main.py --port 8081
+
+# Запуск на конкретном интерфейсе
+python main.py --host 127.0.0.1
+
+# Запуск с использованием HTTP прокси
+python main.py --proxy http://proxy.example.com:8080
+
+# Комбинированный запуск
+python main.py --port 8081 --host 127.0.0.1 --proxy http://proxy.example.com:8080
+
+# Пример с неверным прокси (сервер не запустится)
+python main.py --proxy http://invalid.proxy:9999
 ```
 
 ### Настройка эндпоинтов
@@ -82,18 +131,39 @@ router.add_endpoint(
 - `auth_header`: Заголовок для передачи API ключа (по умолчанию: `X-Forwarded-Token`)
 - `description`: Описание эндпоинта
 
-## CLI
+## Быстрый запуск
 
-Для удобного запуска сервера вы можете использовать CLI:
+Для удобного запуска сервера доступны скрипты:
 
+### Windows (start.bat)
 ```bash
-python -m main [PORT]
+start.bat [port] [host] [proxy]
 ```
 
 Пример:
 ```bash
-python -m main 8081
+start.bat 8080 0.0.0.0 http://proxy.example.com:8080
 ```
+
+### Unix/Linux/macOS (start.sh)
+```bash
+./start.sh [port] [host] [proxy]
+```
+
+Пример:
+```bash
+./start.sh 8080 0.0.0.0 http://proxy.example.com:8080
+```
+
+## CLI
+
+Для запуска сервера напрямую используйте:
+
+```bash
+python main.py --help
+```
+
+Это покажет все доступные параметры командной строки.
 
 ## Логирование
 Сервер логирует все запросы в стандартный вывод. Формат лога:

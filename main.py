@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from endpoints import create_router
-from library import run_server
+from library import run_server, check_proxy_connection
 
 # ---------------------------------------------------------------------------
 # Логирование
@@ -40,17 +40,24 @@ logging.basicConfig(
 
 def main():
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='LLMProxyfier - Proxy server for LLM APIs')
     parser.add_argument('--port', '-p', type=int, default=8080,
                        help='Port to run the server on (default: 8080)')
     parser.add_argument('--host', type=str, default="0.0.0.0",
                        help='Host to bind the server to (default: 0.0.0.0)')
-    
+    parser.add_argument('--proxy', type=str, default=None,
+                       help='HTTP proxy to use for API connections (e.g., http://proxy.example.com:8080)')
+
     args = parser.parse_args()
+
+    router = create_router(proxy_override=args.proxy)
+    run_server(router, port=args.port, host=args.host, proxy=args.proxy)
     
-    router = create_router()
-    run_server(router, port=args.port, host=args.host)
+    # Если сервер не запустился из-за ошибки прокси, возвращаем код ошибки
+    if args.proxy:
+        import time
+        time.sleep(1)  # Даем время на вывод логов
 
 
 if __name__ == "__main__":

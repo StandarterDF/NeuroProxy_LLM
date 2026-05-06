@@ -1,0 +1,4 @@
+# LLMProxyfier Requirements
+# Required packages for running the LLM proxy server
+
+aiohttp==3.9.3

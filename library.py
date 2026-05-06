@@ -33,9 +33,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urljoin
+from urllib.parse import urlparse
 
 from aiohttp import web, ClientSession, TCPConnector, ClientTimeout, ClientConnectionError
 
@@ -405,17 +407,103 @@ class ProxyRouter:
 
 
 # ---------------------------------------------------------------------------
+# Проверка прокси
+# ---------------------------------------------------------------------------
+
+def check_proxy_connection(proxy_url: str) -> bool:
+    """Проверяет работоспособность прокси-сервера."""
+    if not proxy_url:
+        log.info("No proxy specified, using direct connections")
+        return True
+    
+    try:
+        parsed = urlparse(proxy_url)
+        if not parsed.scheme or not parsed.netloc:
+            log.error("Invalid proxy URL format: %s", proxy_url)
+            return False
+        
+        # Извлекаем хост и порт
+        host = parsed.hostname
+        port = parsed.port or (8080 if parsed.scheme == "http" else 443)
+        
+        # Проверяем подключение
+        log.info("Checking proxy connection to %s:%s...", host, port)
+        
+        # Создаем сокет для проверки подключения
+        with socket.create_connection((host, port), timeout=5):
+            log.info("Proxy connection successful: %s", proxy_url)
+            return True
+            
+    except socket.timeout:
+        log.error("Proxy connection timeout: %s", proxy_url)
+        return False
+    except socket.gaierror:
+        log.error("Proxy host not found: %s", proxy_url)
+        return False
+    except ConnectionRefusedError:
+        log.error("Proxy connection refused: %s", proxy_url)
+        return False
+    except Exception as e:
+        log.error("Proxy connection error: %s - %s", proxy_url, str(e))
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Утилита запуска
 # ---------------------------------------------------------------------------
 
-def run_server(router: ProxyRouter, port: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> None:
+def run_server(router: ProxyRouter, port: int = DEFAULT_PORT, host: str = DEFAULT_HOST, proxy: str = None) -> None:
     """Запускает прокси-сервер."""
+    # Проверяем прокси перед запуском
+    if proxy:
+        log.info("Proxy specified via CLI: %s", proxy)
+        if not check_proxy_connection(proxy):
+            log.error("Failed to connect to proxy server. Server will not start.")
+            return
+    else:
+        # Проверяем, есть ли прокси в эндпоинтах по умолчанию
+        default_proxies = set(route.config_factory().proxy for route in router._endpoints if route.config_factory().proxy)
+        if default_proxies:
+            log.info("Using default proxy settings from endpoints configuration")
+            # Проверяем все уникальные прокси по умолчанию
+            for default_proxy in default_proxies:
+                if not check_proxy_connection(default_proxy):
+                    log.warning("Default proxy %s is not reachable, but server will start anyway", default_proxy)
+        else:
+            log.info("No proxy specified, using direct connections")
+    
+    # Если передан глобальный прокси через CLI, обновляем конфигурацию эндпоинтов
+    if proxy:
+        for route in router._endpoints:
+            cfg = route.config_factory()
+            if hasattr(route, '_config_func'):
+                # Для декораторов нужно обновить функцию
+                original_func = route._config_func
+                def make_factory(original_cfg):
+                    def factory():
+                        new_cfg = original_cfg()
+                        new_cfg.proxy = proxy
+                        return new_cfg
+                    return factory
+                route.config_factory = make_factory(original_func)
+            else:
+                # Для add_endpoint обновляем напрямую
+                def make_factory(original_factory):
+                    def factory():
+                        new_cfg = original_factory()
+                        new_cfg.proxy = proxy
+                        return new_cfg
+                    return factory
+                route.config_factory = make_factory(route.config_factory)
+
     app = router.create_app()
 
     log.info("=" * 60)
     log.info("  LLMProxyfier")
     log.info("=" * 60)
     log.info("  Listen : %s:%d", host, port)
+    if proxy:
+        log.info("  Global Proxy : %s", proxy)
     log.info("  Endpoints:")
     for route in router._endpoints:
         cfg = route.config_factory()
