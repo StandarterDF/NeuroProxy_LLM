@@ -41,6 +41,38 @@ from urllib.parse import urlparse
 
 from aiohttp import web, ClientSession, TCPConnector, ClientTimeout, ClientConnectionError
 
+# Цвета для логирования
+class LogColors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+    @classmethod
+    def request(cls, msg):
+        return f"{cls.OKBLUE}{msg}{cls.ENDC}"
+    
+    @classmethod
+    def response(cls, msg):
+        return f"{cls.OKGREEN}{msg}{cls.ENDC}"
+    
+    @classmethod
+    def streaming(cls, msg):
+        return f"{cls.OKCYAN}{msg}{cls.ENDC}"
+    
+    @classmethod
+    def error(cls, msg):
+        return f"{cls.FAIL}{msg}{cls.ENDC}"
+    
+    @classmethod
+    def info(cls, msg):
+        return f"{cls.HEADER}{msg}{cls.ENDC}"
+
 log = logging.getLogger("llmproxyfier")
 
 
@@ -180,18 +212,27 @@ class ProxyRouter:
         method = request.method
         params = dict(request.query_string.items()) if request.query_string else None
 
-        log.info("%s  %s  →  %s  (proxy=%s, body=%d B)",
-                 method, request.path, target_url, config.proxy or "none", len(body))
+        # Извлекаем информацию о модели из запроса
+        model_name = "unknown"
+        try:
+            if body and "application/json" in request.headers.get("Content-Type", ""):
+                request_data = json.loads(body)
+                model_name = request_data.get("model", "unknown")
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        log.info(LogColors.request("%s  %s  →  %s  (proxy=%s, body=%d B, model=%s)"),
+                 method, request.path, target_url, config.proxy or "none", len(body), model_name)
 
         # Streaming?
         want_stream = self._check_stream_wanted(request, body)
 
         if want_stream:
             return await self._streaming_response(request, target_url, method, body,
-                                                  extra_headers, params, config.proxy)
+                                                  extra_headers, params, config.proxy, config.description, model_name)
         else:
             return await self._regular_response(request, target_url, method, body,
-                                                extra_headers, params, config.proxy)
+                                                extra_headers, params, config.proxy, config.description, model_name)
 
     async def _regular_response(
         self,
@@ -202,9 +243,12 @@ class ProxyRouter:
         headers: dict[str, str],
         params: dict | None,
         proxy_url: str,
+        endpoint_description: str = "",
+        model_name: str = "unknown",
     ) -> web.Response:
         connector = TCPConnector(enable_cleanup_closed=True)
         timeout = ClientTimeout(total=DEFAULT_TIMEOUT_TOTAL, connect=DEFAULT_TIMEOUT_CONNECT)
+        start_time = asyncio.get_event_loop().time()
         async with ClientSession(connector=connector, timeout=timeout,
                                   proxy=proxy_url or None) as session:
             resp = await session.request(
@@ -217,7 +261,41 @@ class ProxyRouter:
                 if k.lower() not in {"transfer-encoding", "connection"}
             }
             resp_body = await resp.read()
+            end_time = asyncio.get_event_loop().time()
 
+            # Рассчитываем метрики
+            response_time = end_time - start_time
+            response_size = len(resp_body)
+            
+            # Извлекаем информацию из ответа
+            tokens_used = "N/A"
+            tokens_per_second = "N/A"
+            try:
+                if resp_body and "application/json" in resp.headers.get("Content-Type", ""):
+                    response_data = json.loads(resp_body)
+                    # Пытаемся извлечь информацию о токенах
+                    if isinstance(response_data, dict):
+                        tokens_used = response_data.get("usage", {}).get("total_tokens", "N/A")
+                        if tokens_used == "N/A":
+                            prompt_tokens = response_data.get("usage", {}).get("prompt_tokens", 0)
+                            completion_tokens = response_data.get("usage", {}).get("completion_tokens", 0)
+                            tokens_used = prompt_tokens + completion_tokens
+                        
+                        # Рассчитываем токены в секунду
+                        if isinstance(tokens_used, int) and tokens_used > 0 and response_time > 0:
+                            tokens_per_second = f"{tokens_used / response_time:.1f}"
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+
+            # Логируем детальную информацию
+            log.info(LogColors.response("Response: %s %s → %s | %s | Model: %s | Time: %.2fs | Size: %d B | Tokens: %s | TPS: %s"),
+                     method, request.path, resp.status, endpoint_description, model_name,
+                     response_time, response_size, tokens_used, tokens_per_second)
+
+            # Удаляем Content-Type из заголовков, если он есть, чтобы избежать конфликта
+            if "Content-Type" in resp_headers:
+                del resp_headers["Content-Type"]
+            
             return web.Response(
                 status=resp.status,
                 body=resp_body,
@@ -234,6 +312,8 @@ class ProxyRouter:
         headers: dict[str, str],
         params: dict | None,
         proxy_url: str,
+        endpoint_description: str = "",
+        model_name: str = "unknown",
     ) -> web.StreamResponse:
         response = web.StreamResponse(
             status=200,
@@ -254,6 +334,10 @@ class ProxyRouter:
             sock_read=60,  # Таймаут для чтения данных
         )
 
+        start_time = asyncio.get_event_loop().time()
+        total_bytes = 0
+        chunk_count = 0
+
         try:
             async with ClientSession(connector=connector, timeout=timeout,
                                       proxy=proxy_url or None) as session:
@@ -262,7 +346,8 @@ class ProxyRouter:
                     data=body if body else None,
                 )
                 try:
-                    log.info("Streaming: %s %s", method, target_url)
+                    log.info(LogColors.streaming("Streaming started: %s %s → %s | %s | Model: %s"),
+                             method, request.path, target_url, endpoint_description, model_name)
 
                     # Прозрачно передаём байты от целевого API клиенту
                     try:
@@ -277,6 +362,9 @@ class ProxyRouter:
                             try:
                                 # Добавляем таймаут для записи чанка
                                 await asyncio.wait_for(response.write(chunk), timeout=10.0)
+                                # Обновляем счетчики
+                                total_bytes += len(chunk)
+                                chunk_count += 1
                             except asyncio.TimeoutError:
                                 log.warning("Timeout writing chunk to client, closing stream")
                                 break
@@ -307,6 +395,20 @@ class ProxyRouter:
                 log.warning("Timeout writing EOF to client")
             except (ClientConnectionError, ConnectionResetError, OSError):
                 pass
+
+        end_time = asyncio.get_event_loop().time()
+        streaming_duration = end_time - start_time
+        
+        # Рассчитываем токены в секунду для стриминга (приблизительно)
+        streaming_tps = "N/A"
+        if total_bytes > 0 and streaming_duration > 0:
+            # Приблизительно считаем: 1 токен ≈ 4 байта
+            estimated_tokens = total_bytes // 4
+            streaming_tps = f"{estimated_tokens / streaming_duration:.1f}" if estimated_tokens > 0 else "N/A"
+        
+        log.info(LogColors.streaming("Streaming completed: %s %s | Duration: %.2fs | Chunks: %d | Bytes: %d | TPS: %s | %s | Model: %s"),
+                 method, request.path, streaming_duration, chunk_count, total_bytes, streaming_tps,
+                 endpoint_description, model_name)
 
         return response
 

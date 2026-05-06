@@ -1,3 +1,4 @@
 __pycache__/
 !requirements.txt
 /.qwen
+/test_logging.py
