@@ -1,3 +1,5 @@
+#!/bin/bash
+export PATH=/usr/bin:$PATH
 # LLMProxyfier Start Script for Unix/Linux/macOS
 # Usage: ./start.sh [port] [host] [proxy]
 # Example: ./start.sh 8080 0.0.0.0 http://proxy.example.com:8080
