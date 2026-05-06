@@ -85,6 +85,7 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_AUTH_HEADER = "X-Forwarded-Token"
 DEFAULT_TIMEOUT_TOTAL = 1200
 DEFAULT_TIMEOUT_CONNECT = 300
+DEFAULT_TIMEOUT_READ = 150  # Таймаут чтения данных из сокета (сек)
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +332,7 @@ class ProxyRouter:
         timeout = ClientTimeout(
             total=DEFAULT_TIMEOUT_TOTAL,
             connect=DEFAULT_TIMEOUT_CONNECT,
-            sock_read=60,  # Таймаут для чтения данных
+            sock_read=DEFAULT_TIMEOUT_READ,  # Таймаут для чтения данных
         )
 
         start_time = asyncio.get_event_loop().time()
@@ -357,7 +358,7 @@ class ProxyRouter:
                     try:
                         while True:
                             try:
-                                chunk = await asyncio.wait_for(resp.content.readany(), timeout=60.0)
+                                chunk = await asyncio.wait_for(resp.content.readany(), timeout=DEFAULT_TIMEOUT_READ)
                             except asyncio.TimeoutError:
                                 log.warning("Timeout reading chunk from target API")
                                 break
