@@ -337,6 +337,10 @@ class ProxyRouter:
         start_time = asyncio.get_event_loop().time()
         total_bytes = 0
         chunk_count = 0
+        completion_tokens = None
+        sse_buffer = b""
+        first_chunk_time = None
+        last_chunk_time = None
 
         try:
             async with ClientSession(connector=connector, timeout=timeout,
@@ -359,8 +363,33 @@ class ProxyRouter:
                                 break
                             if not chunk:
                                 break
+
+                            # Добавляем чанк в буфер SSE для парсинга токенов
+                            sse_buffer += chunk
+
+                            # Обновляем время получения чанков
+                            now = asyncio.get_event_loop().time()
+                            if first_chunk_time is None:
+                                first_chunk_time = now
+                            last_chunk_time = now
+
+                            # Обрабатываем полные SSE-сообщения (разделенные \n\n)
+                            while b'\n\n' in sse_buffer:
+                                msg_bytes, sse_buffer = sse_buffer.split(b'\n\n', 1)
+                                msg_str = msg_bytes.decode('utf-8', errors='ignore').strip()
+                                if msg_str.startswith('data: '):
+                                    data_str = msg_str[len('data: '):].strip()
+                                    if data_str and data_str != '[DONE]':
+                                        try:
+                                            data = json.loads(data_str)
+                                            usage = data.get('usage', {})
+                                            if 'completion_tokens' in usage:
+                                                completion_tokens = usage['completion_tokens']
+                                        except json.JSONDecodeError:
+                                            pass
+
                             try:
-                                # Добавляем таймаут для записи чанка
+                                # Отправляем чанк клиенту
                                 await asyncio.wait_for(response.write(chunk), timeout=10.0)
                                 # Обновляем счетчики
                                 total_bytes += len(chunk)
@@ -372,6 +401,20 @@ class ProxyRouter:
                                 # Клиент отключился
                                 log.debug("Client disconnected during streaming: %s", e)
                                 break
+
+                        # Обрабатываем оставшиеся данные в буфере SSE после завершения стрима
+                        if sse_buffer:
+                            msg_str = sse_buffer.decode('utf-8', errors='ignore').strip()
+                            if msg_str.startswith('data: '):
+                                data_str = msg_str[len('data: '):].strip()
+                                if data_str and data_str != '[DONE]':
+                                    try:
+                                        data = json.loads(data_str)
+                                        usage = data.get('usage', {})
+                                        if 'completion_tokens' in usage:
+                                            completion_tokens = usage['completion_tokens']
+                                    except json.JSONDecodeError:
+                                        pass
                     except Exception as e:
                         log.error("Error reading chunk from target API: %s", e)
                 finally:
@@ -399,12 +442,21 @@ class ProxyRouter:
         end_time = asyncio.get_event_loop().time()
         streaming_duration = end_time - start_time
         
-        # Рассчитываем токены в секунду для стриминга (приблизительно)
+        # Рассчитываем длительность генерации (время между первым и последним чанком)
+        if first_chunk_time is not None and last_chunk_time is not None:
+            generation_duration = last_chunk_time - first_chunk_time
+        else:
+            generation_duration = streaming_duration
+
+        # Рассчитываем токены в секунду для стриминга
         streaming_tps = "N/A"
-        if total_bytes > 0 and streaming_duration > 0:
-            # Приблизительно считаем: 1 токен ≈ 4 байта
-            estimated_tokens = total_bytes // 4
-            streaming_tps = f"{estimated_tokens / streaming_duration:.1f}" if estimated_tokens > 0 else "N/A"
+        if generation_duration > 0:
+            if completion_tokens is not None and completion_tokens > 0:
+                streaming_tps = f"{completion_tokens / generation_duration:.1f}"
+            elif total_bytes > 0:
+                # Запасной вариант: приблизительно считаем 1 токен ≈ 4 байта
+                estimated_tokens = total_bytes // 4
+                streaming_tps = f"{estimated_tokens / generation_duration:.1f}" if estimated_tokens > 0 else "N/A"
         
         log.info(LogColors.streaming("Streaming completed: %s %s | Duration: %.2fs | Chunks: %d | Bytes: %d | TPS: %s | %s | Model: %s"),
                  method, request.path, streaming_duration, chunk_count, total_bytes, streaming_tps,
