@@ -32,6 +32,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
 )
+log = logging.getLogger("llmproxyfier.main")
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +49,23 @@ def main():
                        help='Host to bind the server to (default: 0.0.0.0)')
     parser.add_argument('--proxy', type=str, default=None,
                        help='HTTP proxy to use for API connections (e.g., http://proxy.example.com:8080)')
+    parser.add_argument('--no-custom-handlers',
+                       action='store_true',
+                       help='Disable all custom handlers globally (use raw API responses)')
 
     args = parser.parse_args()
 
     router = create_router(proxy_override=args.proxy)
+
+    # Включаем кастомные обработчики (если не отключены через CLI)
+    if not args.no_custom_handlers:
+        from endpoints import enable_custom_handlers
+        enable_custom_handlers(router)
+    else:
+        for route in router._endpoints:
+            route.use_custom_handler_override = False
+        log.warning("Global custom handlers DISABLED (--no-custom-handlers)")
+
     run_server(router, port=args.port, host=args.host, proxy=args.proxy)
     
     # Если сервер не запустился из-за ошибки прокси, возвращаем код ошибки
