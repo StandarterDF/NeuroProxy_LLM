@@ -11,6 +11,7 @@
 from library import ProxyRouter
 
 HTTP_PROXY = "http://127.0.0.1:2081"
+SOCKS_PROXY = "socks5://127.0.0.1:2080"
 
 def create_router(proxy_override: str = None) -> ProxyRouter:
     """Создаёт и настраивает роутер."""
@@ -23,7 +24,7 @@ def create_router(proxy_override: str = None) -> ProxyRouter:
     router.add_endpoint(
         path="/v1",
         target_url="https://api.mistral.ai/v1",
-        proxy=effective_proxy,
+        proxy=SOCKS_PROXY,
         auth_header="X-Forwarded-Token",
         description="Mistral API",
     )
@@ -32,7 +33,7 @@ def create_router(proxy_override: str = None) -> ProxyRouter:
     router.add_endpoint(
         path="/v2",
         target_url="https://integrate.api.nvidia.com/v1",
-        proxy=effective_proxy,
+        proxy=SOCKS_PROXY,
         auth_header="X-Forwarded-Token",
         description="NVIDIA NIM API",
     )
@@ -41,7 +42,7 @@ def create_router(proxy_override: str = None) -> ProxyRouter:
     router.add_endpoint(
         path="/v3",
         target_url="https://openrouter.ai/api/v1",
-        proxy=effective_proxy,
+        proxy=SOCKS_PROXY,
         auth_header="X-Forwarded-Token",
         description="OpenRouter API",
     )
