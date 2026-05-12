@@ -50,6 +50,7 @@ from urllib.parse import urljoin
 from urllib.parse import urlparse
 
 from aiohttp import web, ClientSession, TCPConnector, ClientTimeout, ClientConnectionError
+import brotlicffi
 
 # Цвета для логирования
 class LogColors:
@@ -267,6 +268,16 @@ class ProxyRouter:
         elif "Authorization" in request.headers:
             extra_headers["Authorization"] = request.headers["Authorization"]
 
+        # Добавляем обязательные заголовки для OpenRouter
+        if "openrouter.ai" in config.target_url:
+            if "HTTP-Referer" not in extra_headers:
+                extra_headers["HTTP-Referer"] = "http://localhost:8080"
+            if "X-Title" not in extra_headers:
+                extra_headers["X-Title"] = "LLMProxyfier"
+            # Передаём куку из исходного запроса, если она есть
+            if "Cookie" in request.headers:
+                extra_headers["Cookie"] = request.headers["Cookie"]
+
         # Тело запроса
         body = await request.read()
         method = request.method
@@ -281,26 +292,40 @@ class ProxyRouter:
         except (json.JSONDecodeError, ValueError):
             pass
 
-        log.info(LogColors.request("%s  %s  →  %s  (proxy=%s, body=%d B, model=%s)"),
-                 method, request.path, target_url, config.proxy or "none", len(body), model_name)
+        log.info(LogColors.request("%s  %s  →  %s | Model: %s"),
+                 method, request.path, target_url, model_name)
+        log.debug("Request headers: %s", extra_headers)
 
         # Кастомный обработчик?
         if config.use_custom_handler and config.custom_handler is not None:
-            log.info(LogColors.info("Using custom handler for %s"), request.path)
-            result = await config.custom_handler(
-                request=request,
-                config=config,
-                target_url=target_url,
-                method=method,
-                body=body,
-                headers=extra_headers,
-                params=params,
-            )
-            # Handler вернул None → пробросить запрос дальше как обычный прокси
-            if result is None:
-                log.info(LogColors.info("Custom handler returned None, proxying normally"))
-            else:
-                return result
+            log.info(LogColors.info("Custom handler for %s"), request.path)
+            try:
+                result = await config.custom_handler(
+                    request=request,
+                    config=config,
+                    target_url=target_url,
+                    method=method,
+                    body=body,
+                    headers=extra_headers,
+                    params=params,
+                )
+                # Handler вернул None → пробросить запрос дальше как обычный прокси
+                if result is None:
+                    log.info(LogColors.info("Custom handler returned None, proxying normally"))
+                else:
+                    return result
+            except ConnectionResetError as e:
+                log.error(LogColors.error("ConnectionResetError in custom handler: %s"), e)
+                return web.Response(
+                    status=502,  # Bad Gateway
+                    text="Connection reset by remote host"
+                )
+            except Exception as e:
+                log.error(LogColors.error("Unexpected error in custom handler: %s"), e)
+                return web.Response(
+                    status=500,  # Internal Server Error
+                    text="Internal server error"
+                )
 
         # Streaming?
         want_stream = self._check_stream_wanted(request, body)
@@ -338,7 +363,23 @@ class ProxyRouter:
                 k: v for k, v in resp.headers.items()
                 if k.lower() not in {"transfer-encoding", "connection"}
             }
-            resp_body = await resp.read()
+            try:
+                resp_body = await resp.read()
+            except ConnectionResetError as e:
+                log.error(LogColors.error("ConnectionResetError while reading response: %s"), e)
+                return web.Response(
+                    status=502,  # Bad Gateway
+                    text="Connection reset by remote host"
+                )
+
+            # Обработка кодировки brotli
+            if resp.headers.get("Content-Encoding") == "br":
+                try:
+                    resp_body = brotlicffi.decompress(resp_body)
+                except brotlicffi._api.error as e:
+                    log.warning("Brotli decompress failed: %s", e)
+                    # Если декодирование не удалось, используем исходные данные
+                    pass
             end_time = asyncio.get_event_loop().time()
 
             # Рассчитываем метрики
@@ -366,9 +407,14 @@ class ProxyRouter:
                 pass
 
             # Логируем детальную информацию
-            log.info(LogColors.response("Response: %s %s → %s | %s | Model: %s | Time: %.2fs | Size: %d B | Tokens: %s | TPS: %s"),
-                     method, request.path, resp.status, endpoint_description, model_name,
-                     response_time, response_size, tokens_used, tokens_per_second)
+            log.info(LogColors.response("Response: %s %s → %s | Model: %s | Time: %.2fs | Size: %d B"),
+                     method, request.path, resp.status, model_name, response_time, response_size)
+            
+            # Логируем первые 100 и последние 100 символов ответа для отладки
+            if response_size > 0:
+                response_preview = resp_body[:100].decode('utf-8', errors='ignore')
+                response_suffix = resp_body[-100:].decode('utf-8', errors='ignore')
+                log.debug("Response preview: %s...%s", response_preview, response_suffix)
 
             # Удаляем Content-Type из заголовков, если он есть, чтобы избежать конфликта
             if "Content-Type" in resp_headers:
@@ -428,13 +474,22 @@ class ProxyRouter:
         try:
             async with ClientSession(connector=connector, timeout=timeout,
                                       proxy=proxy_url or None) as session:
-                resp = await session.request(
-                    method, target_url, headers=headers, params=params,
-                    data=body if body else None,
-                )
                 try:
-                    log.info(LogColors.streaming("Streaming started: %s %s → %s | %s | Model: %s"),
-                             method, request.path, target_url, endpoint_description, model_name)
+                    resp = await session.request(
+                        method, target_url, headers=headers, params=params,
+                        data=body if body else None,
+                    )
+                except ConnectionResetError as e:
+                    log.error(LogColors.error("ConnectionResetError while connecting to target: %s"), e)
+                    try:
+                        await response.write_eof()
+                    except Exception:
+                        pass
+                    return response
+
+                try:
+                    log.info(LogColors.streaming("Streaming started: %s %s | Model: %s"),
+                             method, request.path, model_name)
 
                     # Прозрачно передаём байты от целевого API клиенту
                     try:
@@ -442,7 +497,10 @@ class ProxyRouter:
                             try:
                                 chunk = await asyncio.wait_for(resp.content.readany(), timeout=DEFAULT_TIMEOUT_READ)
                             except asyncio.TimeoutError:
-                                log.warning("Timeout reading chunk from target API")
+                                log.warning("Timeout reading chunk")
+                                break
+                            except ConnectionResetError as e:
+                                log.error(LogColors.error("ConnectionResetError while reading chunk: %s"), e)
                                 break
                             if not chunk:
                                 break
@@ -478,7 +536,7 @@ class ProxyRouter:
                                 total_bytes += len(chunk)
                                 chunk_count += 1
                             except asyncio.TimeoutError:
-                                log.warning("Timeout writing chunk to client, closing stream")
+                                log.warning("Timeout writing chunk")
                                 break
                             except (ClientConnectionError, ConnectionResetError, OSError) as e:
                                 # Клиент отключился
@@ -499,7 +557,7 @@ class ProxyRouter:
                                     except json.JSONDecodeError:
                                         pass
                     except Exception as e:
-                        log.error("Error reading chunk from target API: %s", e)
+                        log.error("Error reading chunk: %s", e)
                 finally:
                     await resp.release()
         except (ConnectionError, TimeoutError, OSError) as exc:
@@ -518,7 +576,7 @@ class ProxyRouter:
             try:
                 await asyncio.wait_for(response.write_eof(), timeout=5.0)
             except asyncio.TimeoutError:
-                log.warning("Timeout writing EOF to client")
+                log.warning("Timeout writing EOF")
             except (ClientConnectionError, ConnectionResetError, OSError):
                 pass
 
@@ -541,9 +599,8 @@ class ProxyRouter:
                 estimated_tokens = total_bytes // 4
                 streaming_tps = f"{estimated_tokens / generation_duration:.1f}" if estimated_tokens > 0 else "N/A"
         
-        log.info(LogColors.streaming("Streaming completed: %s %s | Duration: %.2fs | Chunks: %d | Bytes: %d | TPS: %s | %s | Model: %s"),
-                 method, request.path, streaming_duration, chunk_count, total_bytes, streaming_tps,
-                 endpoint_description, model_name)
+        log.info(LogColors.streaming("Streaming completed: %s %s | Duration: %.2fs | Chunks: %d | Bytes: %d | Model: %s"),
+                 method, request.path, streaming_duration, chunk_count, total_bytes, model_name)
 
         return response
 

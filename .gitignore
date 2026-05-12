@@ -2,3 +2,6 @@ __pycache__/
 !requirements.txt
 /.qwen
 /test_logging.py
+/test_hy3.py
+/test_universal.py
+/test_openrouter.py

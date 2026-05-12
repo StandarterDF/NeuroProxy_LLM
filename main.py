@@ -29,15 +29,26 @@ from library import run_server, check_proxy_connection
 # ---------------------------------------------------------------------------
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
 )
 log = logging.getLogger("llmproxyfier.main")
+
+# Уменьшаем уровень логирования для aiohttp, чтобы уменьшить шум
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+def handle_asyncio_exception(loop, context):
+    """Глобальный обработчик исключений для asyncio."""
+    if "exception" in context and isinstance(context["exception"], ConnectionResetError):
+        log.warning("ConnectionResetError caught in asyncio loop: %s", context["exception"])
+    else:
+        log.error("Unexpected error in asyncio loop: %s", context.get("message", "Unknown error"))
+
 
 def main():
     import argparse
@@ -55,6 +66,11 @@ def main():
 
     args = parser.parse_args()
 
+    # Устанавливаем глобальный обработчик исключений для asyncio
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.set_exception_handler(handle_asyncio_exception)
+
     router = create_router(proxy_override=args.proxy)
 
     # Включаем кастомные обработчики (если не отключены через CLI)
@@ -67,7 +83,7 @@ def main():
         log.warning("Global custom handlers DISABLED (--no-custom-handlers)")
 
     run_server(router, port=args.port, host=args.host, proxy=args.proxy)
-    
+
     # Если сервер не запустился из-за ошибки прокси, возвращаем код ошибки
     if args.proxy:
         import time
