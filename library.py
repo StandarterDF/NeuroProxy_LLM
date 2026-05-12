@@ -373,11 +373,16 @@ class ProxyRouter:
             # Удаляем Content-Type из заголовков, если он есть, чтобы избежать конфликта
             if "Content-Type" in resp_headers:
                 del resp_headers["Content-Type"]
-            
+
+            # Удаляем charset из Content-Type, если он есть
+            content_type = resp.headers.get("Content-Type", "application/json")
+            if ";" in content_type:
+                content_type = content_type.split(";")[0].strip()
+
             return web.Response(
                 status=resp.status,
                 body=resp_body,
-                content_type=resp.headers.get("Content-Type", "application/json"),
+                content_type=content_type,
                 headers=resp_headers,
             )
 
